@@ -1,4 +1,3 @@
-#Em 03/12/24 daqui para baixo contém os códigos de 0 até 5 para testes
 
 from datetime import datetime
 import os
@@ -13,6 +12,10 @@ import threading
 import win32print
 import win32api
 
+import imapclient
+import pyzmail
+import pyperclip
+
 from reportlab.pdfgen import canvas
 from io import BytesIO
 import gspread  # Para acessar o Google Planilhas
@@ -23,6 +26,7 @@ from PyPDF2 import PdfMerger
 from send2trash import send2trash  # Biblioteca para mover arquivos para a lixeira
 import pandas as pd
 from docxtpl import DocxTemplate
+from docx import Document
 
 from selenium import webdriver
 from webdriver_manager.chrome import ChromeDriverManager
@@ -31,6 +35,10 @@ from selenium.webdriver.common.by import By
 from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.support.ui import Select, WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
+from reportlab.lib.colors import red
+
+
+
 
 #Código 0, copiar dados do Google Planilhas
 
@@ -152,17 +160,14 @@ def verificar_e_preencher_excel():
 
     # Salva o arquivo Excel com as alterações
     workbook.save(arquivo_excel)
-    print("Livros de registros dos Pa's da procuradoria com sucesso!")
+    print("Livros de registros dos Pa's da procuradoria inseridos com sucesso!")
 
 
 # Gera o arquivo de registros na primeira execução, se necessário
 verificar_e_preencher_excel()
 
 
-
-
 #Código 2 baixar arquivos do ESAJ e inicio de completar informações nescessarias;
-
 
 # Função para atualizar o WebDriver e garantir que está atualizado
 def update_webdriver():
@@ -170,7 +175,6 @@ def update_webdriver():
     service = Service(ChromeDriverManager().install())
     return service
 
-# Função para realizar o login no site
 def realizar_login(driver):
     with open("login_esaj_TJSP.txt", "r") as file:
         login = file.readline().strip()
@@ -179,16 +183,106 @@ def realizar_login(driver):
     driver.get(
         "https://esaj.tjsp.jus.br/sajcas/login?service=https%3A%2F%2Fesaj.tjsp.jus.br%2Fesaj%2Fj_spring_cas_security_check"
     )
-
     driver.find_element(By.XPATH, '//*[@id="usernameForm"]').send_keys(login)
     driver.find_element(By.XPATH, '//*[@id="passwordForm"]').send_keys(senha)
     driver.find_element(By.XPATH, '//*[@id="pbEntrar"]').click()
-    time.sleep(1)
+    print("Login inicial feito, aguardando tela do token...")
+    time.sleep(5)
+
+def buscar_token(driver):
+    email_usuario = 'inserir conta de email aqui'
+    senha_app = 'inserir senha de app aqui'
+
+    imap = imapclient.IMAPClient('imap.gmail.com', ssl=True)
+    imap.login(email_usuario, senha_app)
+    imap.select_folder('INBOX')
+
+    hoje = datetime.now().strftime('%d-%b-%Y')
+    criterio_busca = ['FROM', 'esaj@tjsp.jus.br']
+
+    print("Aguardando o e-mail com o token...")
+
+    tentativas_sem_token = 0
+
+    while True:
+        imap.noop()
+
+        mensagens = imap.search(criterio_busca)
+        if mensagens:
+            mensagens.sort(reverse=True)
+            for uid in mensagens:
+                mensagem = imap.fetch([uid], ['BODY[]'])
+                email = pyzmail.PyzMessage.factory(mensagem[uid][b'BODY[]'])
+
+                if email.text_part:
+                    conteudo = email.text_part.get_payload().decode(email.text_part.charset)
+                    resultado = re.search(r'(\d{6})', conteudo)
+
+                    if resultado:
+                        token = resultado.group(1)
+                        print(f"Token encontrado: {token}")
+
+                        pyperclip.copy(token)
+                        imap.move([uid], '[Gmail]/Trash')
+                        print("E-mail movido para a lixeira.")
+                        return token
+
+        tentativas_sem_token += 1
+        print(f"Token não encontrado - tentativa {tentativas_sem_token}")
+
+        # Se passou 61 tentativas (122s), clicar para reenviar o token
+        if tentativas_sem_token >= 61:
+            print("Token não encontrado após 120s, clicando para reenviar o token...")
+            try:
+                driver.find_element(By.XPATH, '//*[@id="btnReceberToken"]').click()
+                print("Cliquei para reenviar o token!")
+            except:
+                print("Não encontrei o botão de reenviar token.")
+
+            tentativas_sem_token = 0  # Resetar tentativas
+
+        time.sleep(2)
+
+def inserir_token(driver, token):
+    campo_token = driver.find_element(By.XPATH, '//*[@id="tokenInformado"]')
+    campo_token.clear()
+    campo_token.send_keys(token)
+    driver.find_element(By.XPATH, '//*[@id="btnEnviarToken"]').click()
+    print("Token inserido, aguardando validação...")
+
+    try:
+        WebDriverWait(driver, 5).until(
+            EC.presence_of_element_located((By.XPATH, '//*[@id="avisoTokenInvalido"]/span'))
+        )
+        print("Token inválido detectado, buscando novo token...")
+        return False  # Token inválido
+    except:
+        print("Token aceito!")
+        return True  # Token válido
+
+def login_esaj(driver):
+    try:
+        realizar_login(driver)
+
+        while True:
+            token = buscar_token(driver)
+            if inserir_token(driver, token):
+                break  # Sai do loop se o token for válido
+            else:
+                print("Repetindo processo de busca de novo token...")
+
+        print("Login realizado no sistema E-SAJ")
+        time.sleep(5)
+
+    except Exception as e:
+        print(f"Erro durante o login: {e}")
+        raise
 
 # Função para acessar o site de consulta
 def acessar_site(driver):
     driver.get("https://esaj.tjsp.jus.br/cpopg/open.do")
     time.sleep(1)
+
 
 # Função para fechar janelas extras, mantendo apenas a janela principal aberta
 def fechar_janelas_extras(driver, janela_principal):
@@ -198,8 +292,10 @@ def fechar_janelas_extras(driver, janela_principal):
             driver.close()
     driver.switch_to.window(janela_principal)
 
+
 # Caminho da pasta de downloads
 downloads_path = Path.home() / "Downloads"
+
 
 # Função para mover o arquivo baixado para a pasta "docs PJs" e salvar o caminho em um bloco de notas
 def mover_arquivo_downloads(destino_pasta):
@@ -223,6 +319,7 @@ def mover_arquivo_downloads(destino_pasta):
     # Salva o caminho da pasta "docs PJs" em um bloco de notas
     with open("diretorio_docs_pjs.txt", "w") as file:
         file.write(str(docs_pjs_path))
+
 
 # Função para consultar o processo e salvar as informações no Excel
 def consultar_processo(driver, id_processo, row_index, sheet):
@@ -297,13 +394,13 @@ def consultar_processo(driver, id_processo, row_index, sheet):
                 )
                 continuar_button.click()
                 time.sleep(10)
-
+                # Tempo equivalente a 1 hora
                 # Aguarda até que o botão de download esteja disponível e clica nele
-                download_button = WebDriverWait(driver, 20).until(
+                download_button = WebDriverWait(driver, 3600).until(
                     EC.element_to_be_clickable((By.XPATH, '//*[@id="btnDownloadDocumento"]'))
                 )
                 download_button.click()
-                time.sleep(5)
+                time.sleep(10)
 
                 # Fecha a janela pop-up após o download
                 driver.close()
@@ -322,6 +419,8 @@ def consultar_processo(driver, id_processo, row_index, sheet):
             print(f"Aviso: ID do processo '{id_processo}' não está no formato esperado.")
     else:
         print("Aviso: O ID do processo está vazio. Linha ignorada.")
+
+
 # Função principal para processar todos os dados
 def processar_dados():
     wb = load_workbook("dados_para_autuar_processos.xlsx")
@@ -331,7 +430,7 @@ def processar_dados():
     service = update_webdriver()
     driver = webdriver.Chrome(service=service, options=chrome_options)
 
-    realizar_login(driver)
+    login_esaj(driver)
 
     for i, row in enumerate(sheet.iter_rows(min_row=2, max_col=8, values_only=True), start=2):
         id_processo, procurador, orgao = row[0], row[1], row[2]
@@ -371,9 +470,12 @@ def processar_dados():
     wb.save("dados_para_autuar_processos.xlsx")
     driver.quit()
 
+
 # Chama a função principal
 if __name__ == "__main__":
     processar_dados()
+
+
 
 
 # Código 3 - Finalizar as informações nescessarias para autuar os processos no GIAP
@@ -431,12 +533,12 @@ for linha in range(2, planilha.max_row + 1):
     if orgao == "TJSP":
         if procurador:  # Se o "Procurador" estiver preenchido
             texto = (f"Ação Judicial envolvendo {nome_parte} e PREFEITURA MUNICIPAL DE CARAPICUIBA. "
-                     f"{classe}   {assunto}   número do processo: {numero_processo} {complemento_livro_saj}")
+                     f"{classe}   {assunto}  - número do processo: {numero_processo} {complemento_livro_saj} {procurador}")
         else:  # Se o "Procurador" estiver vazio
             texto = (f"Solicitação de providências/ Solicitação de Informações envolvendo {nome_parte} "
-                     f"e PREFEITURA MUNICIPAL DE CARAPICUIBA   {classe}   {assunto} número do processo: {numero_processo} {complemento_livro_saj}")
+                     f"e PREFEITURA MUNICIPAL DE CARAPICUIBA   {classe}   {assunto} - número do processo: {numero_processo}")
     else:  # Quando o "Orgão" for diferente de "TJSP"
-        texto = f"Solicitação de providências/ Solicitação de Informações envolvendo {id_processo} {complemento_livro_saj}"
+        texto = f"Solicitação de providências/ Solicitação de Informações envolvendo {id_processo} {complemento_livro_saj} {procurador}"
 
     # Inserir o texto na 8ª coluna ("Informacoes completas para autuar o PA")
     planilha.cell(row=linha, column=coluna_info_completa).value = texto
@@ -448,8 +550,12 @@ workbook.save(arquivo_excel)
 print("Todas as informações necessárias para autuar os processos foram inseridas.")
 
 
+print("Os documentos estão sendo divididos em suas respectivas petições e decisões. Esse processo tende a demorar.")
 
-#Código 4 - dividir os documentos baixados em PDF
+
+#Código 4 dividir os PDF's em suas respectivas petições e Decisões
+
+
 
 
 # Configuração da pasta de entrada e saída
@@ -468,23 +574,73 @@ TERMINOS_PETICAO = [
     "Termosemque, PedeeEsperaDeferimento.",
     "Termosemque, PedeeEsperaDeferimento",
     "Termos em que, Pede e Espera Deferimento",
+    #Os termos abaixo eu inseri em 09/01/2025
+    "Termos em que,",
+    "p. deferimento",
+    "Pede Deferimento.",
+    "Pede Deferimento",
+    "Pede e Espera Deferimento.",
+    "Termosemque,"
+    "PedeeEsperaDeferimento.",
+    "PedeeEsperaDeferimento",
+    "Nestes termos, pede e espera deferimento",
+    "Nestes termos, pede deferimento",
+    "Nestes termos, espera deferimento",
+    "Nesses termos pede deferimento.",
+    "Nesses termos, pede deferimento.",
+    "Nesses termos pede deferimento",
+    "Nesses termos, pede deferimento",
+    "Nesses termos pede e aguarda deferimento",
+    "Nesses termos, pede e aguarda deferimento",
+    "Nesses termos pede e aguarda deferimento."
+
+
+
+
+
+
 ]
 TERMO_DECISAO = "DECISÃO"
 TERMO_DESPACHO = "DESPACHO"
 TERMO_OFICIO = "OFÍCIO"
-TERMO_JUIZ = "Juiz(a) de Direito: Dr(a)."
+
+#TERMO_JUIZ = "Juiz(a) de Direito: Dr(a)"
+
+TERMO_JUIZ = [
+    "Juiz(a) de Direito: Dr(a)",
+    "Juiz de Direito:",
+    "Juíza de Direito:",
+    "Juiz(a) de Direito",
+    "Juiz de Direito",
+    "Juíza de Direito"
+]
+
 TERMO_TRIBUNAL = "TRIBUNAL DE JUSTIÇA DO ESTADO DE SÃO PAULO"
+
+
 
 # Função para localizar páginas baseadas em termos
 def localizar_paginas(doc, termos, termos_adicionais=None, ultima_ocorrencia=False):
+    """
+    Localiza páginas em um documento PDF com base em termos principais e adicionais.
+
+    Args:
+        doc: Documento PDF carregado com fitz.
+        termos: Lista de termos principais a serem buscados.
+        termos_adicionais: Lista de termos adicionais a serem buscados (opcional).
+        ultima_ocorrencia: Se True, retorna apenas a última ocorrência encontrada.
+
+    Returns:
+        Lista de índices das páginas encontradas ou a última página se ultima_ocorrencia for True.
+    """
     paginas_encontradas = []
-    for i in range(len(doc)):
-        pagina = doc[i]
+    for i, pagina in enumerate(doc):
         texto = pagina.get_text()
 
         # Verifica se os termos principais estão na página
         if any(termo in texto for termo in termos):
-            if termos_adicionais is None or all(termo in texto for termo in termos_adicionais):
+            # Verifica se todos os termos adicionais estão na página (se fornecidos)
+            if termos_adicionais is None or any(termo in texto for termo in termos_adicionais):
                 paginas_encontradas.append(i)
 
     # Retorna as páginas encontradas ou apenas a última se necessário
@@ -505,14 +661,14 @@ for arquivo in os.listdir(PASTA_ORIGEM):
                     paginas_peticao = list(range(0, i + 1))  # Da página 0 até a página encontrada
                     break
 
-            # Se nenhuma página de petição for encontrada, pegar as 30 primeiras
+            # Se nenhuma página de petição for encontrada, pegar as 15 primeiras
             if not paginas_peticao:
-                paginas_peticao = list(range(0, min(30, len(doc))))
+                paginas_peticao = list(range(0, min(15, len(doc))))
 
             # Localizar a última decisão, despacho ou ofício
-            paginas_decisao = localizar_paginas(doc, [TERMO_DECISAO], [TERMO_JUIZ], ultima_ocorrencia=True)
+            paginas_decisao = localizar_paginas(doc, [TERMO_DECISAO], termos_adicionais=TERMO_JUIZ, ultima_ocorrencia=True)
             if not paginas_decisao:  # Se nenhuma decisão for encontrada, buscar despachos
-                paginas_decisao = localizar_paginas(doc, [TERMO_DESPACHO], [TERMO_JUIZ], ultima_ocorrencia=True)
+                paginas_decisao = localizar_paginas(doc, [TERMO_DESPACHO], termos_adicionais=TERMO_JUIZ, ultima_ocorrencia=True)
             if not paginas_decisao:  # Se nenhum despacho for encontrado, buscar ofícios
                 paginas_decisao = localizar_paginas(doc, [TERMO_OFICIO], ultima_ocorrencia=True)
 
@@ -546,7 +702,22 @@ for arquivo in os.listdir(PASTA_ORIGEM):
             doc_final.close()
 
         # Enviar o arquivo original para a lixeira
-        shutil.move(caminho_arquivo, Path.home() / ".Trash")
+        #shutil.move(caminho_arquivo, Path.home() / ".Trash")
+
+# Após o processamento de todos os arquivos, move os processados para a lixeira
+#PASTA_ORIGEM = "docs PJs"
+
+# Apagar o conteúdo da pasta
+for arquivo in os.listdir(PASTA_ORIGEM):
+    caminho_arquivo = os.path.join(PASTA_ORIGEM, arquivo)
+    try:
+        if os.path.isfile(caminho_arquivo) or os.path.islink(caminho_arquivo):
+            os.unlink(caminho_arquivo)  # Remove arquivos ou links simbólicos
+        elif os.path.isdir(caminho_arquivo):
+            shutil.rmtree(caminho_arquivo)  # Remove diretórios e seu conteúdo
+        print(f"Removido: {caminho_arquivo}")
+    except Exception as e:
+        print(f"Erro ao remover {caminho_arquivo}: {e}")
 
 
 
@@ -560,18 +731,14 @@ def carregar_dados_txt(caminho_txt):
     matricula = linhas[1].strip()  # Segunda linha: Matrícula
     return sigla, matricula
 
-
-from reportlab.lib.colors import red  # Importar a cor desejada (vermelho)
-from reportlab.lib.colors import black  # Importar a cor desejada (preto)
-
-
-def ajustar_orientacao_e_numerar(input_path, output_path, sigla, matricula, inicio=2, fonte="Helvetica",
-                                 tamanho_fonte=12):
-    """Ajusta a orientação das páginas para retrato e adiciona numeração personalizada."""
+def ajustar_orientacao_e_numerar(input_path, output_path, sigla, matricula, inicio=2, fonte="Helvetica", tamanho_fonte=12):
+    """Ajusta a orientação das páginas para retrato e adiciona numeração personalizada com lógica de frente e verso."""
     reader = PdfReader(input_path)
     writer = PdfWriter()
 
-    for numero, pagina in enumerate(reader.pages, start=inicio):
+    numero_pagina = inicio  # Inicia a numeração pela página 2
+
+    for indice, pagina in enumerate(reader.pages):
         # Verifica e ajusta a rotação da página
         if pagina.get("/Rotate") in [90, 270]:  # Páginas na horizontal
             pagina.rotate(0)  # Ajusta para retrato
@@ -584,21 +751,43 @@ def ajustar_orientacao_e_numerar(input_path, output_path, sigla, matricula, inic
         buffer = BytesIO()
         c = canvas.Canvas(buffer, pagesize=(largura_pagina, altura_pagina))
 
-        # Define a posição para o canto superior direito
-        texto_numero = f"Folha {numero}"
+        # Define a numeração da página
+        if indice % 2 == 0:  # Páginas pares (frente)
+            texto_numero = f"Folha {numero_pagina}"
+        else:  # Páginas ímpares (verso)
+            texto_numero = f"Folha {numero_pagina} verso"
+            numero_pagina += 1  # Incrementa a numeração somente após o verso
+
         texto_sigla = f"{sigla}"
         texto_matricula = f"{matricula}"
 
-        margem_direita = 120  # Distância da borda direita
+        # Definições do quadro branco
+        margem_direita = 60  # Distância da borda direita
         margem_topo = 30  # Distância do topo
+        largura_quadro = 80  # Largura do quadro branco
+        altura_quadro = 30  # Altura do quadro branco
+        margem_interna = 10  # Margem interna para o texto dentro do quadro
 
-        # Adiciona o texto
+        # Calcula a posição do quadro branco no canto superior direito
+        pos_x_quadro = largura_pagina - margem_direita - largura_quadro
+        pos_y_quadro = altura_pagina - margem_topo - altura_quadro
+
+        # Desenha o quadro branco
+        c.setFillColor("white")  # Cor de fundo branca
+        c.rect(pos_x_quadro, pos_y_quadro, largura_quadro, altura_quadro, fill=1)
+
+        # Ajusta a posição do texto dentro do retângulo
+        pos_x_texto = pos_x_quadro + margem_interna
+        pos_y_texto = pos_y_quadro + altura_quadro - margem_interna  # Alinhado no topo dentro do quadro
+
+        # Adiciona a numeração e a sigla dentro do quadro
         c.setFont(fonte, tamanho_fonte)
         c.setFillColor(red)  # Define a cor como vermelho
-        c.drawString(largura_pagina - margem_direita, altura_pagina - margem_topo, texto_numero)
+        c.drawString(pos_x_texto, pos_y_texto, texto_numero)
+
         c.setFont(fonte, tamanho_fonte - 2)
-        c.drawString(largura_pagina - margem_direita, altura_pagina - margem_topo - 15, texto_sigla)
-        c.drawString(largura_pagina - margem_direita, altura_pagina - margem_topo - 30, texto_matricula)
+        c.drawString(pos_x_texto, pos_y_texto - 15, texto_sigla)
+        c.drawString(pos_x_texto, pos_y_texto - 30, texto_matricula)
 
         c.save()
         buffer.seek(0)
@@ -646,7 +835,6 @@ processar_pasta_docs(
 
 
 
-
 #Código 6 autuar os processos no GIAP;
 
 
@@ -654,7 +842,6 @@ processar_pasta_docs(
 def carregar_credenciais(caminho_json):
     with open(caminho_json, 'r') as arquivo:
         return json.load(arquivo)
-
 
 # Dicionário de siglas
 dicionario_orgao = {
@@ -664,19 +851,13 @@ dicionario_orgao = {
     # Adicione outras siglas conforme necessário
 }
 
-# Configurar WebDriver
+# Configuração do WebDriver
 def configurar_webdriver():
     options = webdriver.ChromeOptions()
-    # Diretório onde o arquivo PDF será salvo
     caminho_para_salvar_pdf = r"C:\Users\wesley\PycharmProjects\Autuar-processos\docs numerados"
 
-    # Configurações para salvar como PDF
     settings = {
-        "recentDestinations": [{
-            "id": "Save as PDF",
-            "origin": "local",
-            "account": ""
-        }],
+        "recentDestinations": [{"id": "Save as PDF", "origin": "local", "account": ""}],
         "selectedDestinationId": "Save as PDF",
         "version": 2,
         "isHeaderFooterEnabled": False,
@@ -689,106 +870,106 @@ def configurar_webdriver():
     }
 
     options.add_experimental_option("prefs", prefs)
-    options.add_argument('--kiosk-printing')  # Imprime automaticamente sem abrir a janela de impressão
+    options.add_argument('--kiosk-printing')  # Imprime automaticamente
 
     return webdriver.Chrome(service=Service(ChromeDriverManager().install()), options=options)
 
 
-def renomear_capa_pdf(diretorio, texto_busca):
+def renomear_todos_pdfs(diretorio, texto_busca, tentativas=5, intervalo=2):
     for arquivo in os.listdir(diretorio):
         if arquivo.endswith(".pdf"):
             caminho_pdf = os.path.join(diretorio, arquivo)
+
+            # Ler o conteúdo do PDF
             with fitz.open(caminho_pdf) as pdf:
-                texto = ""
-                for pagina in pdf:
-                    texto += pagina.get_text()
+                texto = "".join(pagina.get_text() for pagina in pdf)
 
-                # Procurar o identificador único no texto
-                if texto_busca in texto:
-                    inicio = texto.find(texto_busca) + len(texto_busca)
-                    fim = texto.find("\n", inicio)  # Encontra o final da linha
-                    numero_processo = texto[inicio:fim].strip()
+            # Verificar se o texto buscado está no PDF
+            if texto_busca in texto:
+                inicio = texto.find(texto_busca) + len(texto_busca)
+                fim = texto.find("\n", inicio)
+                numero_processo = texto[inicio:fim].strip().replace("/", "-")
+                novo_nome = f"capa_ref_pa_{numero_processo}.pdf"
 
-                    # Substituir "/" por "-" no nome do arquivo
-                    numero_processo = numero_processo.replace("/", "-")
+                # Tentar renomear o arquivo
+                for tentativa in range(tentativas):
+                    try:
+                        os.rename(caminho_pdf, os.path.join(diretorio, novo_nome))
+                        print(f"Arquivo '{arquivo}' renomeado para: {novo_nome}")
+                        break  # Sai do loop de tentativas ao renomear
+                    except PermissionError as e:
+                        print(f"Tentativa {tentativa + 1} falhou: {e}")
+                        time.sleep(intervalo)
+                else:
+                    print(f"Não foi possível renomear '{arquivo}' após {tentativas} tentativas.")
+            else:
+                print(f"Texto não encontrado no arquivo '{arquivo}'.")
 
-                    # Criar o novo nome para o arquivo
-                    novo_nome = f"capa_ref_pa_{numero_processo}.pdf"
-                    caminho_novo = os.path.join(diretorio, novo_nome)
+# Função para renomear todos os PDFs restantes
+#def renomear_todos_pdfs(diretorio, texto_busca):
+#    print("Renomeando todos os PDFs...")
+#    for arquivo in os.listdir(diretorio):
+#        if arquivo.endswith(".pdf") and not arquivo.startswith("capa_ref_pa_"):
+#            renomear_capa_pdf(diretorio, texto_busca)
+#    print("Renomeação concluída.")
 
-            #Esse time sleep é para dar tempo de renomear o arquivo de capa
-            time.sleep(0.5)
-            # Fechando o arquivo antes de renomeá-lo
-            os.rename(caminho_pdf, caminho_novo)
-            print(f"Arquivo renomeado para: {novo_nome}")
-            return  # Parar após renomear o arquivo correto
 
 
 # Função principal
 def processar_planilha(caminho_excel, caminho_credenciais):
-    # Carregar planilha
     workbook = openpyxl.load_workbook(caminho_excel)
-    sheet = workbook.active  # Considera a primeira aba como ativa
+    sheet = workbook.active
 
-    # Carregar credenciais
     credenciais = carregar_credenciais(caminho_credenciais)
     usuario = credenciais['usuario']
     senha = credenciais['senha']
 
-    # Iniciar WebDriver
     driver = configurar_webdriver()
 
     try:
-        # Realizar login no GIAP
+        # Acessar o site e fazer login
         driver.get('https://carapicuiba.giap.com.br/apex/carapi/f?p=652:LOGIN')
-        driver.find_element(By.ID, 'P101_USERNAME').clear()
         driver.find_element(By.ID, 'P101_USERNAME').send_keys(usuario)
-        driver.find_element(By.ID, 'P101_PASSWORD').clear()
         driver.find_element(By.ID, 'P101_PASSWORD').send_keys(senha)
         driver.find_element(By.ID, 'wwvFlowForm').submit()
 
-        time.sleep(1)
+        time.sleep(2)
+        driver.find_element(By.XPATH, '//*[@id="report_R5001749296453489731"]/tbody/tr[2]/td/table/tbody/tr[2]/td[2]/a').click()
+
+        # BTN de clicar na guia de processo
         driver.find_element(By.XPATH,
-                            '//*[@id="report_R5001749296453489731"]/tbody/tr[2]/td/table/tbody/tr[2]/td[2]/a').click()
+                            '// *[ @ id = "wwvFlowForm"] / div[2] / div / table / tbody / tr / td / div[1] / div[3] / div[1] / img').click()
 
-        # Iterar pelas linhas da planilha (ignorando o cabeçalho)
         for row_index, row in enumerate(sheet.iter_rows(min_row=2), start=2):
-            orgao = row[2].value  # Coluna "Orgão" (índice 2, base 0)
-            informacoes = row[7].value  # Coluna "Informações completas para autuar o PA"
+            orgao = row[2].value
+            informacoes = row[7].value
 
-            if not orgao:  # Interrompe ao encontrar linha vazia
+            if orgao is None or str(orgao).strip() == "":
                 break
 
-                # Buscar o significado da sigla no dicionário
             significado = dicionario_orgao.get(orgao, "Sigla não encontrada")
 
-            #BTN de clicar na guia de processo
-            driver.find_element(By.XPATH,
-                                '// *[ @ id = "wwvFlowForm"] / div[2] / div / table / tbody / tr / td / div[1] / div[3] / div[1] / img').click()
-            #Aqui está no menu principal, dai esse botão é para clicar em "Abertura de Processo"
-            driver.find_element(By.XPATH,
-                                '//*[@id="R5002551580972218898"]/tbody/tr[2]/td/ol/li[1]/a').click()
-
-            #Aqui está faltando o trecho até chegar ao campo de busca
+            driver.find_element(By.XPATH, '//*[@id="R5002551580972218898"]/tbody/tr[2]/td/ol/li[1]/a').click()
+            time.sleep(1)
             # Preencher dados no GIAP
-            time.sleep(2)
+
             campo_de_busca_nome_orgao = driver.find_element(By.XPATH, '//*[@id="P52_DSP_RESPONSAVEL"]')
             campo_de_busca_nome_orgao.clear()
             campo_de_busca_nome_orgao.send_keys(significado)
-            time.sleep(2)
+            time.sleep(1)
             campo_de_busca_nome_orgao.submit()
             time.sleep(1)
 
             # Selecionar opções específicas no GIAP (exemplo)
             if significado == "TRIBUNAL DE JUSTIÇA DO ESTADO DE SÃO PAULO":
-                    driver.find_element(By.XPATH,
-                                        '//*[@id="report_P52_TIPO_EXPEDIENTE"]/tbody/tr[2]/td/table/tbody/tr[3]/td[10]/a').click()
+                driver.find_element(By.XPATH,
+                                    '//*[@id="report_P52_TIPO_EXPEDIENTE"]/tbody/tr[2]/td/table/tbody/tr[3]/td[10]/a').click()
             elif significado == "DEFENSORIA PUBLICA DO ESTADO DE SAO PAULO":
-                    driver.find_element(By.XPATH,
-                                        '//*[@id="report_P52_TIPO_EXPEDIENTE"]/tbody/tr[2]/td/table/tbody/tr[2]/td[10]/a').click()
+                driver.find_element(By.XPATH,
+                                    '//*[@id="report_P52_TIPO_EXPEDIENTE"]/tbody/tr[2]/td/table/tbody/tr[2]/td[10]/a').click()
             elif significado == "TRIBUNAL REGIONAL DO TRABALHO DA 2A REGIAO":
-                    driver.find_element(By.XPATH,
-                                        '//*[@id="report_P52_TIPO_EXPEDIENTE"]/tbody/tr[2]/td/table/tbody/tr[2]/td[10]/a').click()
+                driver.find_element(By.XPATH,
+                                    '//*[@id="report_P52_TIPO_EXPEDIENTE"]/tbody/tr[2]/td/table/tbody/tr[2]/td[10]/a').click()
 
             dropdown = driver.find_element(By.XPATH, '//*[@id="P51_TIPO_PROCESSO"]')
             select = Select(dropdown)
@@ -800,54 +981,126 @@ def processar_planilha(caminho_excel, caminho_credenciais):
             driver.find_element(By.XPATH, '//*[@id="P51_PRCS_DES_PROCESSO"]').send_keys(informacoes)
             time.sleep(1)
 
+            #Clicar no Radio Button chamado de "Eletrônico" e o selecionar com um click
+            radio_button = WebDriverWait(driver, 10).until(
+                EC.element_to_be_clickable((By.XPATH, '//*[@id="P51_STA_ELETRO"]/div/div/div[1]'))
+            )
+
+            # Clica no radio button
+            radio_button.click()
+
+
             # Clicar no botão "gerar processo"
             driver.find_element(By.XPATH, '//*[@id="B5000650400896932596"]/span').click()
 
             # Copiar número do PA gerado
             copiar_num_pa = WebDriverWait(driver, 10).until(
-            EC.presence_of_element_located(
-                        (By.XPATH, '//*[@id="apex_layout_5000650194595932588"]/tbody/tr/td[2]'))
+                EC.presence_of_element_located(
+                    (By.XPATH, '//*[@id="apex_layout_5000650194595932588"]/tbody/tr/td[2]'))
             )
             valor_giap_copiado = copiar_num_pa.text
 
             # Atualizar a célula correspondente na planilha
             sheet.cell(row=row_index, column=9, value=valor_giap_copiado)  # Coluna 9 é "Número PA gerado"
 
-                # Salvar a planilha atualizada
+            # Salvar a planilha atualizada
             workbook.save(caminho_excel)
 
-            # Daqui para baixo segue o meu código para  baixar a capa como PDF
+            # Daqui para baixo segue o meu código para baixar a capa como PDF
 
             # Salvar a página como PDF
             driver.find_element(By.XPATH, '//*[@id="B4985322504071026678"]/span').click()
-            driver.switch_to.window(driver.window_handles[1])
+
+            # Identificar as janelas/abas abertas
+            janelas = driver.window_handles
+            driver.switch_to.window(janelas[1])
+
             print("Salvando a página como PDF...")
             driver.execute_script('window.print();')
-            time.sleep(5)  # Tempo para salvar o arquivo
-            driver.close()
-            driver.switch_to.window(driver.window_handles[0])
+
+
+
+            # Obter todos os identificadores de janela
             print("Capa do processo salva como PDF com sucesso!")
 
-            # Renomear a capa do processo
-            diretorio_pdfs = r"C:\Users\wesley\PycharmProjects\Autuar-processos\docs numerados"
-            renomear_capa_pdf(diretorio_pdfs, "INFORMAÇÕES DO PROCESSO - ")
+            time.sleep(2)
+            # driver.close()
 
-            #Clicar na engrenagem para aparecer o menu para voltar para a tela principal do GIAP
+            # Voltar para a janela principal
+            driver.switch_to.window(janelas[0])
+            time.sleep(2)
+
+            # Clicar na engrenagem para aparecer o menu para voltar para a tela principal do GIAP
             driver.find_element(By.XPATH, '//*[@id="menu_app"]').click()
+            time.sleep(2)
+            # Depois de clicar na engrenagem, vai clicar no botão chamado de "Processo" para voltar para a tela principal do GIAP
+            driver.find_element(By.XPATH,
+                                '//*[@id="aparece_app"]/div[2]/table/tbody/tr/td/div[2]/div/div/div[1]/div[1]/img').click()
+            time.sleep(2)
 
-            #Depois de clicar na engranagem, vai clicar no botão  chamado de "Processo" para voltar para a tela principal do GIAP
-            driver.find_element(By.XPATH, '// *[ @ id = "aparece_app"] / div[2] / table / tbody / tr / td / div[2] / div / div / div[1] / div[1] / img').click()
-
-    finally:
         driver.quit()
+        renomear_todos_pdfs(r"C:\Users\wesley\PycharmProjects\Autuar-processos\docs numerados",
+                          "INFORMAÇÕES DO PROCESSO - ")
 
 
-# Caminhos dos arquivos
+    except Exception as e:
+        print(f"Erro ocorreu: {e}")
+    finally:
+        print("Processos autuados e capas imprimidas e renomeadas.")
+        #driver.quit()
+
+# Caminhos
 caminho_excel = "dados_para_autuar_processos.xlsx"
 caminho_credenciais = "credenciais_login_GIAP.json"
 
 # Executar
 processar_planilha(caminho_excel, caminho_credenciais)
+
+
+
+#Código 6.1 inserir uma pg em branco nas capas do GIAP
+#Isso é por causa da impressora que imprime frente e verso
+
+
+
+def adicionar_pagina_branca_em_pdfs(diretorio):
+    """
+    Insere uma página em branco como página 2 em PDFs cujo nome começa com 'capa_ref_pa_'.
+
+    :param diretorio: Caminho do diretório onde estão os arquivos PDF.
+    """
+    # Caminho do diretório com os PDFs
+    for arquivo in os.listdir(diretorio):
+        if arquivo.startswith("capa_ref_pa_") and arquivo.endswith(".pdf"):
+            caminho_arquivo = os.path.join(diretorio, arquivo)
+
+            # Ler o PDF existente
+            reader = PdfReader(caminho_arquivo)
+            writer = PdfWriter()
+
+            # Adicionar a primeira página do PDF original
+            writer.add_page(reader.pages[0])
+
+            # Adicionar uma página em branco
+            writer.add_blank_page()
+
+            # Adicionar as páginas restantes do PDF original
+            for pagina in reader.pages[1:]:
+                writer.add_page(pagina)
+
+            # Salvar o novo arquivo no mesmo local com o mesmo nome
+            with open(caminho_arquivo, "wb") as arquivo_pdf:
+                writer.write(arquivo_pdf)
+
+            print(f"Página em branco adicionada ao arquivo: {arquivo}")
+
+# Caminho do diretório
+diretorio_pdfs = r"C:\Users\wesley\PycharmProjects\Autuar-processos\docs numerados"
+
+# Executar a função
+adicionar_pagina_branca_em_pdfs(diretorio_pdfs)
+
+
 
 
 #Código 7 - Juntar capa com os documentos em si
@@ -947,97 +1200,187 @@ processar_documentos(diretorio_docs, arquivo_excel)
 
 #Código 8 Criar o modelo de registro para os cadernos SAJ de procurador
 
-# Caminho para o arquivo Excel e o modelo do Word
+
+# Caminhos para os arquivos
 excel_file = 'dados_para_autuar_processos.xlsx'
 sheet_name = 'CAPTACOES'
 word_template = 'modelos_pa_procuradoria.docx'
+output_folder = Path("docs numerados")
+output_folder.mkdir(exist_ok=True)  # Garante que a pasta existe
 
-# Carregar o Excel com pandas
-df = pd.read_excel(excel_file, sheet_name=sheet_name)
+try:
+    # Carregar o Excel
+    df = pd.read_excel(excel_file, sheet_name=sheet_name)
 
-# Verificar o DataFrame carregado
-print("Cabeçalhos do DataFrame:", df.columns)
-print(df.head())  # Mostra as primeiras linhas para confirmar os dados
+    # Obter a data atual
+    current_day = datetime.today().day
+    current_month = datetime.today().month
+    months = ['Jan', 'Fev', 'Mar', 'Abr', 'Mai', 'Jun', 'Jul', 'Ago', 'Set', 'Out', 'Nov', 'Dez']
+    current_month_text = months[current_month - 1]
+    current_year = datetime.today().year
+    current_date = f"{current_day} {current_month_text} {current_year}"
 
-# Obter a data atual
-current_day = datetime.today().day
-current_month = datetime.today().month
-months = [
-    'Jan', 'Fev', 'Mar', 'Abr', 'Mai', 'Jun',
-    'Jul', 'Ago', 'Set', 'Out', 'Nov', 'Dez'
-]
-current_month_text = months[current_month - 1]
-current_year = datetime.today().year
-current_date = f"{current_day} {current_month_text} {current_year}"
+    # Filtrar apenas as linhas que têm um procurador definido
+    df_filtered = df[df['Procurador'].notna()]
 
-# Filtrar as linhas onde a coluna "Procurador" não está vazia
-df_filtered = df[df['Procurador'].notna()]
+    # Criar lista de registros para inserir no Word
+    table_data = []
+    for _, row in df_filtered.iterrows():
+        data_procurador = f"{current_date} - {row['Procurador']}"
+        table_data.append({
+            'Número PA Gerado': row['Numero PA gerado'],
+            'Informações Completas para Autuar o PA': row['Informacoes completas para autuar o PA'],
+            'Data Atual + Procurador': data_procurador,
+            'Livro saj': row['Livro saj']
+        })
 
-# Verificar o filtro
-print("DataFrame filtrado:")
-print(df_filtered)
-print(f"Quantidade de linhas após filtro: {len(df_filtered)}")
+    # Variável para numerar os arquivos
+    file_count = 1
 
-# Preparar os dados para preencher a tabela no Word
-table_data = []
-for _, row in df_filtered.iterrows():
-    numero_pa = row['Numero PA gerado']
-    info_completa = row['Informacoes completas para autuar o PA']
-    procurador = row['Procurador']
-    data_procurador = f"{current_date}  {procurador}"
+    # Criar arquivos separados
+    for i in range(0, len(table_data), 4):  # Processa até 3 registros por arquivo
+        doc = DocxTemplate(word_template)
 
-    table_data.append({
-        'Data Atual': current_date,
-        'Número PA Gerado': numero_pa,
-        'Informações Completas para Autuar o PA': info_completa,
-        'Data Atual + Procurador': data_procurador
-    })
+        # Pegamos um lote de 10 registros (ou menos, se for o final da lista)
+        context = {'table': table_data[i:i+4]}
 
-# Verificar os dados preparados
-print("Dados preparados para o Word:")
-print(table_data)
+        # Renderizar o documento com os dados
+        doc.render(context)
 
-# Carregar o modelo do Word
-doc = DocxTemplate(word_template)
+        # Criar um novo documento Word a partir do preenchido
+        final_doc = Document()
+        final_doc.add_paragraph().add_run().add_break()  # Adiciona quebra de página
+        for element in doc.element.body:
+            final_doc.element.body.append(element)
 
-# Adicionar os dados ao contexto do documento
-context = {'table': table_data}
+        # Adicionar uma página em branco
+        final_doc.add_page_break()
 
-# Renderizar o documento com os dados
-doc.render(context)
+        # Nome do arquivo com numeração
+        output_file = output_folder / f"modelo_registros_PA_procuradoria_preenchido{file_count}.docx"
 
-# Salvar o documento preenchido
-output_file = r"docs numerados/modelo_registros_PA_procuradoria_preenchido.docx"
-doc.save(output_file)
+        # Salvar o documento final
+        final_doc.save(output_file)
+        print(f"✅ Documento gerado com sucesso: {output_file}")
 
-print(f"Documento gerado com sucesso: {output_file}")
+        file_count += 1  # Incrementa o número do arquivo
 
+except Exception as e:
+    print(f"❌ Erro ao gerar o documento: {e}")
 
 
-# Código 8.1 - Imprimir arquivos de um diretório
-# Escolher qual impressora usar
+
+
+
+
+#A ideia aqui é a de imprimir o modelo do que colar no caderno para que após isso a impressão fique rápida,
+# já que na primeira vez ela imprime de forma lenta.
+
+print("Abaixo segue a listagem das impressoras disponíveis:")
+
+# Lista todas as impressoras disponíveis
 lista_impressoras = win32print.EnumPrinters(2)
-impressora = lista_impressoras[5]
+print("---------------------")
+for i, impressora in enumerate(lista_impressoras):
+    print(f"{i}: {impressora[2]}")  # O nome da impressora está na posição [2]
+print("---------------------")
 
-# Mostrar a lista das impressoras conectadas ao PC
-#print(lista_impressoras)
+# Seleciona a impressora (verifica se há pelo menos duas impressoras disponíveis)
+try:
+    impressora = lista_impressoras[6]  # Ajuste conforme necessário
+    win32print.SetDefaultPrinter(impressora[2])
+except IndexError:
+    print("Erro: Nenhuma impressora disponível ou índice inválido.")
+    exit(1)
 
-win32print.SetDefaultPrinter(impressora[2])
-
-# Mandar imprimir todos os arquivos de uma pasta
+# Diretório dos arquivos a serem impressos
 caminho = r"C:\Users\wesley\PycharmProjects\Autuar-processos\docs numerados"
-lista_arquivos = os.listdir(caminho)
 
-# https://docs.microsoft.com/en-us/windows/win32/api/shellapi/nf-shellapi-shellexecutea
+
+# Função para verificar se há documentos na fila de impressão
+def obter_numero_jobs():
+    try:
+        printer_info = win32print.OpenPrinter(impressora[2])
+        jobs = win32print.EnumJobs(printer_info, 0, -1, 1)  # Obtém a lista de trabalhos na fila
+        win32print.ClosePrinter(printer_info)
+        return len(jobs)  # Retorna o número de trabalhos na fila
+    except Exception as e:
+        print(f"Erro ao acessar a fila de impressão: {e}")
+        return -1
+
+
+# Função para verificar se um arquivo está desbloqueado
+def arquivo_desbloqueado(caminho_arquivo, timeout=30):
+    tempo_inicio = time.time()
+    while time.time() - tempo_inicio < timeout:
+        try:
+            with open(caminho_arquivo, "r"):
+                return True
+        except PermissionError:
+            print(f"Aguardando o arquivo {os.path.basename(caminho_arquivo)} ser liberado...")
+            time.sleep(5)
+    print(f"Aviso: Tempo limite atingido para desbloqueio de {os.path.basename(caminho_arquivo)}.")
+    return False
+
+
+# Lista inicial de arquivos
+lista_arquivos = sorted(os.listdir(caminho))  # Ordena os arquivos por nome
+arquivos_nao_impressos = []
+
+print("Arquivos encontrados para impressão:")
 for arquivo in lista_arquivos:
-    win32api.ShellExecute(0, "print", os.path.join(caminho, arquivo), None, caminho, 0)
+    print(arquivo)
 
-print("Arquivos enviados para impressão. Aguardando a conclusão da impressão...")
-# Espera para garantir que todos os arquivos sejam impressos
-time.sleep(60)  # Ajuste o tempo conforme necessário para garantir que todos os arquivos sejam impressos
+while lista_arquivos:
+    arquivo = lista_arquivos[0]  # Pega o primeiro arquivo da lista
+    caminho_arquivo = os.path.join(caminho, arquivo)
 
+    try:
+        print(f"Enviando para impressão: {arquivo}")
+        win32api.ShellExecute(0, "print", caminho_arquivo, None, caminho, 0)
+    except Exception as e:
+        print(f"Erro ao tentar imprimir {arquivo}: {e}")
+        arquivos_nao_impressos.append(arquivo)
+        lista_arquivos.pop(0)
+        continue  # Passa para o próximo arquivo
 
+    # Esperar até que o trabalho entre na fila de impressão (com timeout)
+    print("Aguardando o arquivo entrar na fila de impressão...")
+    tempo_inicio = time.time()
+    while obter_numero_jobs() == 0:
+        if time.time() - tempo_inicio > 30:
+            print(f"Aviso: {arquivo} não entrou na fila de impressão a tempo.")
+            arquivos_nao_impressos.append(arquivo)
+            break
+        time.sleep(1)
 
+    # Aguardando a impressão ser concluída (com timeout)
+    print("Aguardando a impressão ser concluída...")
+    tempo_inicio = time.time()
+    while obter_numero_jobs() > 0:
+        if time.time() - tempo_inicio > 120:
+            print(f"Aviso: Tempo limite atingido para impressão de {arquivo}.")
+            arquivos_nao_impressos.append(arquivo)
+            break
+        time.sleep(5)
+
+    print(f"Verificando se o arquivo {arquivo} está desbloqueado...")
+    if not arquivo_desbloqueado(caminho_arquivo):
+        arquivos_nao_impressos.append(arquivo)
+        lista_arquivos.pop(0)
+        continue
+
+    print(f"Movendo {arquivo} para a lixeira...")
+    send2trash(caminho_arquivo)
+    lista_arquivos = sorted(os.listdir(caminho))  # Atualiza a lista de arquivos restantes
+
+print("Todos os arquivos processados. Atualizando planilhas do Expediente e Procuradoria...")
+
+# Exibir arquivos que não foram impressos
+if arquivos_nao_impressos:
+    print("Os seguintes arquivos não foram impressos e precisam ser verificados manualmente:")
+    for arquivo in arquivos_nao_impressos:
+        print(f"- {arquivo}")
 
 
 #Código 9 atualizar as planilhas de judicial e do expediente
@@ -1213,8 +1556,6 @@ limpar_planilha_captacoes()
 
 #Código 10.1 - mover  o conteudo dos diretórios para a lixeira
 
-print("Movendo os arquivos das pastas de PDF's de PJ's para a lixeira.")
-
 def mover_para_lixeira():
     # Lista das pastas que terão seus conteúdos movidos para a lixeira
     pastas = ["docs PJs", "docs numerados", "docs processados"]
@@ -1231,16 +1572,28 @@ def mover_para_lixeira():
 
             # Move para a lixeira apenas arquivos ou diretórios válidos
             if os.path.isfile(caminho_item) or os.path.isdir(caminho_item):
-                send2trash(caminho_item)
-                print(f"Movido para a lixeira: {caminho_item}")
+                tentativas = 0
+                max_tentativas = 20  # Número máximo de tentativas
+                while tentativas < max_tentativas:
+                    try:
+                        # Verifica se o arquivo está em uso tentando abrir em modo exclusivo
+                        with open(caminho_item, 'rb+'):
+                            pass
+                        # Se o arquivo não estiver em uso, move para a lixeira
+                        send2trash(caminho_item)
+                        print(f"Movido para a lixeira: {caminho_item}")
+                        break
+                    except PermissionError:
+                        tentativas += 1
+                        print(f"O arquivo '{caminho_item}' está em uso. Tentando novamente ({tentativas}/{max_tentativas})...")
+                        time.sleep(5)  # Aguarda 5 segundos antes de tentar novamente
+                    except Exception as e:
+                        print(f"Erro ao tentar mover '{caminho_item}' para a lixeira: {e}")
+                        break
+                else:
+                    print(f"O arquivo '{caminho_item}' não pôde ser movido após {max_tentativas} tentativas.")
 
-    print("Todos os arquivos e subdiretórios das pastas especificadas foram movidos para a lixeira.")
+    print("Processo de mover arquivos para a lixeira concluído.")
 
 # Chamar a função
 mover_para_lixeira()
-
-
-
-
-
-
