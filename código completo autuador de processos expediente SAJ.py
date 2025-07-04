@@ -7,6 +7,8 @@ import shutil
 import re
 import fitz  # PyMuPDF
 from PyPDF2 import PdfReader, PdfWriter
+import PyPDF2
+import pdfplumber
 import json
 import threading
 import win32print
@@ -15,6 +17,8 @@ import win32api
 import imapclient
 import pyzmail
 import pyperclip
+
+from collections import Counter
 
 from reportlab.pdfgen import canvas
 from io import BytesIO
@@ -40,7 +44,97 @@ from reportlab.lib.colors import red
 
 
 
+
+
+# ----------------------------------------------------------------
+#Código -1 [EXTRA], Verificação e limpeza de planilha para caso de execução do código pós erro;
+# ----------------------------------------------------------------
+
+#Implementado em 04/07/2025
+
+
+
+# Caminhos dos arquivos
+planilha_path = "dados_para_autuar_processos.xlsx"
+bloco_notas_path = "livro_de_registros_pa_procuradores_judiciais.txt"
+
+# Abrir a planilha mantendo a formatação
+wb = load_workbook(planilha_path)
+ws = wb.active
+
+# Identificar índice da coluna "Livro saj"
+header = [cell.value for cell in ws[1]]
+coluna_livro_saj_idx = header.index("Livro saj") + 1  # 1-based index
+
+# Coletar valores da coluna "Livro saj" (linha 2 em diante)
+valores_coluna = []
+for row in ws.iter_rows(min_row=2, min_col=coluna_livro_saj_idx, max_col=coluna_livro_saj_idx):
+    cell_value = row[0].value
+    if cell_value and isinstance(cell_value, str) and cell_value.strip():
+        valores_coluna.append(cell_value.strip())
+
+# Se houver valores para processar
+if valores_coluna:
+    # Contar quantas vezes cada valor aparece na planilha
+    contador_planilha = Counter(valores_coluna)
+
+    # Ler o conteúdo do bloco de notas
+    with open(bloco_notas_path, "r", encoding="latin-1") as f:
+        linhas_txt = f.readlines()
+
+    # Preparar nova lista de linhas atualizadas
+    linhas_txt_atualizadas = linhas_txt.copy()
+
+    for valor, qtd_planilha in contador_planilha.items():
+        # Encontrar índices das linhas com o valor e status "(já utilizado)"
+        indices_alvo = [
+            i for i, linha in enumerate(linhas_txt)
+            if linha.strip().startswith(f"{valor},(já utilizado)")
+        ]
+
+        # Selecionar os últimos 'qtd_planilha' índices para alteração
+        for idx in reversed(indices_alvo[-qtd_planilha:]):
+            linhas_txt_atualizadas[idx] = linhas_txt_atualizadas[idx].replace(
+                ",(já utilizado)", ",(utilizável)", 1
+            )
+
+    # Escrever de volta o bloco de notas com as alterações
+    with open(bloco_notas_path, "w", encoding="latin-1") as f:
+        f.writelines(linhas_txt_atualizadas)
+
+    # Apagar colunas de A até I (colunas 1 a 9), exceto cabeçalho
+    for row in ws.iter_rows(min_row=2, max_col=9):
+        for cell in row:
+            cell.value = None
+
+    # Salvar a planilha mantendo a formatação
+    wb.save(planilha_path)
+
+    print("Erro detectado em execução anterior do programa, procedimentos nescessarios tomados para nova execução da automação.")
+else:
+    print("Não foram encontrados erros de execução anteriores, código pronto para copiar os dados registrados do Google Planilhas.")
+
+
+#Após excluir os registros, exclui arquivos pdf'S das pastas da automação, caso existam.
+
+# Pastas a serem verificadas
+pastas = ["docs numerados", "docs PJs", "docs processados"]
+
+for pasta in pastas:
+    if os.path.exists(pasta):
+        for arquivo in os.listdir(pasta):
+            caminho_completo = os.path.join(pasta, arquivo)
+            if os.path.isfile(caminho_completo):  # Só envia arquivos (não pastas)
+                try:
+                    send2trash(caminho_completo)
+                except Exception as e:
+                    print(f"Erro ao mover {caminho_completo} para a lixeira: {e}")
+
+# ----------------------------------------------------------------
 #Código 0, copiar dados do Google Planilhas
+# ----------------------------------------------------------------
+
+
 
 
 print("Copiando os dados disponíveis da planilha Google, aguarde.")
@@ -92,8 +186,9 @@ copiar_dados_para_excel()
 
 
 
+# ----------------------------------------------------------------
 #Código 1 inserir livro SAJ nas células correspondentes
-
+# ----------------------------------------------------------------
 
 
 def gerar_registros():
@@ -167,7 +262,16 @@ def verificar_e_preencher_excel():
 verificar_e_preencher_excel()
 
 
+
+
+# ----------------------------------------------------------------
 #Código 2 baixar arquivos do ESAJ e inicio de completar informações nescessarias;
+# ----------------------------------------------------------------
+
+
+
+
+
 
 # Função para atualizar o WebDriver e garantir que está atualizado
 def update_webdriver():
@@ -190,8 +294,8 @@ def realizar_login(driver):
     time.sleep(5)
 
 def buscar_token(driver):
-    email_usuario = 'inserir conta de email aqui'
-    senha_app = 'inserir senha de app aqui'
+    email_usuario = 'protocolosexpedientesajpmc@gmail.com'
+    senha_app = 'otby gbko eryn fgmz'
 
     imap = imapclient.IMAPClient('imap.gmail.com', ssl=True)
     imap.login(email_usuario, senha_app)
@@ -477,8 +581,13 @@ if __name__ == "__main__":
 
 
 
+# ----------------------------------------------------------------
+#Código 3 - Finalizar as informações nescessarias para autuar os processos no GIAP
+# ----------------------------------------------------------------
 
-# Código 3 - Finalizar as informações nescessarias para autuar os processos no GIAP
+
+
+
 
 
 
@@ -553,73 +662,50 @@ print("Todas as informações necessárias para autuar os processos foram inseri
 print("Os documentos estão sendo divididos em suas respectivas petições e decisões. Esse processo tende a demorar.")
 
 
-#Código 4 dividir os PDF's em suas respectivas petições e Decisões
+
+# ----------------------------------------------------------------
+#Código 4 dividir os PDF's em suas respectivas petições e Decisões alterado em 24-06-2025
+# ----------------------------------------------------------------
 
 
 
 
-# Configuração da pasta de entrada e saída
+
+
+
+#Novo código, ele possui agora uma variação  utilizando "pdfplumber" para caso o PyPDF não consiga processar algum arquivo em especifico,
+#como se fosse uma contramedida.
+
+
+# Configuração de pastas
 PASTA_ORIGEM = "docs PJs"
 PASTA_SAIDA = "docs processados"
-
-# Certifique-se de que a pasta de saída existe
 os.makedirs(PASTA_SAIDA, exist_ok=True)
 
-# Dicionário de termos de busca
+# Termos de busca aprimorados (combinando ambos códigos)
 TERMINOS_PETICAO = [
-    "Nestes termos p. deferimento",
-    "Termos em que, Pede Deferimento.",
-    "Termos em que, Pede Deferimento",
-    "Termos em que, Pede e Espera Deferimento.",
-    "Termosemque, PedeeEsperaDeferimento.",
-    "Termosemque, PedeeEsperaDeferimento",
-    "Termos em que, Pede e Espera Deferimento",
-    #Os termos abaixo eu inseri em 09/01/2025
-    "Termos em que,",
-    "p. deferimento",
-    "Pede Deferimento.",
-    "Pede Deferimento",
-    "Pede e Espera Deferimento.",
-    "Termosemque,"
-    "PedeeEsperaDeferimento.",
-    "PedeeEsperaDeferimento",
-    "Nestes termos, pede e espera deferimento",
-    "Nestes termos, pede deferimento",
-    "Nestes termos, espera deferimento",
-    "Nesses termos pede deferimento.",
-    "Nesses termos, pede deferimento.",
-    "Nesses termos pede deferimento",
-    "Nesses termos, pede deferimento",
-    "Nesses termos pede e aguarda deferimento",
-    "Nesses termos, pede e aguarda deferimento",
-    "Nesses termos pede e aguarda deferimento."
-
-
-
-
-
-
+    "Nestes termos p. deferimento", "Termos em que, Pede Deferimento.", "Pede Deferimento",
+    "Nestes termos, pede deferimento", "Nesses termos pede e aguarda deferimento",
+    "Termos em que, Pede e Espera Deferimento.", "Termosemque, PedeeEsperaDeferimento.",
+    "Termosemque, PedeeEsperaDeferimento", "Termos em que, Pede e Espera Deferimento",
+    "Termos em que,", "p. deferimento", "Pede e Espera Deferimento.", "Termosemque,",
+    "PedeeEsperaDeferimento.", "PedeeEsperaDeferimento", "Nestes termos, pede e espera deferimento",
+    "Nestes termos, espera deferimento", "Nesses termos pede deferimento.", "Nesses termos, pede deferimento.",
+    "Nesses termos pede deferimento", "Nesses termos, pede deferimento", "Nesses termos pede e aguarda deferimento",
+    "Nesses termos, pede e aguarda deferimento", "Nesses termos pede e aguarda deferimento."
 ]
+
 TERMO_DECISAO = "DECISÃO"
 TERMO_DESPACHO = "DESPACHO"
 TERMO_OFICIO = "OFÍCIO"
-
-#TERMO_JUIZ = "Juiz(a) de Direito: Dr(a)"
-
-TERMO_JUIZ = [
-    "Juiz(a) de Direito: Dr(a)",
-    "Juiz de Direito:",
-    "Juíza de Direito:",
-    "Juiz(a) de Direito",
-    "Juiz de Direito",
-    "Juíza de Direito"
-]
-
 TERMO_TRIBUNAL = "TRIBUNAL DE JUSTIÇA DO ESTADO DE SÃO PAULO"
 
+TERMO_JUIZ = [
+    "Juiz(a) de Direito: Dr(a)", "Juiz de Direito:", "Juíza de Direito:",
+    "Juiz(a) de Direito", "Juiz de Direito", "Juíza de Direito"
+]
 
 
-# Função para localizar páginas baseadas em termos
 def localizar_paginas(doc, termos, termos_adicionais=None, ultima_ocorrencia=False):
     """
     Localiza páginas em um documento PDF com base em termos principais e adicionais.
@@ -637,91 +723,185 @@ def localizar_paginas(doc, termos, termos_adicionais=None, ultima_ocorrencia=Fal
     for i, pagina in enumerate(doc):
         texto = pagina.get_text()
 
-        # Verifica se os termos principais estão na página
         if any(termo in texto for termo in termos):
-            # Verifica se todos os termos adicionais estão na página (se fornecidos)
             if termos_adicionais is None or any(termo in texto for termo in termos_adicionais):
                 paginas_encontradas.append(i)
 
-    # Retorna as páginas encontradas ou apenas a última se necessário
     return [paginas_encontradas[-1]] if ultima_ocorrencia and paginas_encontradas else paginas_encontradas
 
-# Processar cada arquivo PDF na pasta
-for arquivo in os.listdir(PASTA_ORIGEM):
-    if arquivo.endswith(".pdf"):
-        caminho_arquivo = os.path.join(PASTA_ORIGEM, arquivo)
-        doc = fitz.open(caminho_arquivo)
 
-        try:
-            # Localizar páginas da petição inicial
-            paginas_peticao = []
-            for i, pagina in enumerate(doc):
-                texto = pagina.get_text()
-                if any(termo in texto for termo in TERMINOS_PETICAO):
-                    paginas_peticao = list(range(0, i + 1))  # Da página 0 até a página encontrada
-                    break
+def processar_com_pymupdf(caminho_arquivo, nome_base):
+    """Processa o PDF usando PyMuPDF (fitz) como método principal."""
+    doc = fitz.open(caminho_arquivo)
+    try:
+        # Localizar páginas da petição
+        paginas_peticao = []
+        for i, pagina in enumerate(doc):
+            texto = pagina.get_text()
+            if any(termo in texto for termo in TERMINOS_PETICAO):
+                paginas_peticao = list(range(0, i + 1))
+                break
 
-            # Se nenhuma página de petição for encontrada, pegar as 15 primeiras
-            if not paginas_peticao:
-                paginas_peticao = list(range(0, min(15, len(doc))))
+        if not paginas_peticao:
+            paginas_peticao = list(range(0, min(15, len(doc))))
 
-            # Localizar a última decisão, despacho ou ofício
-            paginas_decisao = localizar_paginas(doc, [TERMO_DECISAO], termos_adicionais=TERMO_JUIZ, ultima_ocorrencia=True)
-            if not paginas_decisao:  # Se nenhuma decisão for encontrada, buscar despachos
-                paginas_decisao = localizar_paginas(doc, [TERMO_DESPACHO], termos_adicionais=TERMO_JUIZ, ultima_ocorrencia=True)
-            if not paginas_decisao:  # Se nenhum despacho for encontrado, buscar ofícios
-                paginas_decisao = localizar_paginas(doc, [TERMO_OFICIO], ultima_ocorrencia=True)
+        # Localizar decisão/despacho/ofício
+        paginas_decisao = localizar_paginas(doc, [TERMO_DECISAO], TERMO_JUIZ, ultima_ocorrencia=True)
+        if not paginas_decisao:
+            paginas_decisao = localizar_paginas(doc, [TERMO_DESPACHO], TERMO_JUIZ, ultima_ocorrencia=True)
+        if not paginas_decisao:
+            paginas_decisao = localizar_paginas(doc, [TERMO_OFICIO], ultima_ocorrencia=True)
 
-            # Extrair as páginas identificadas
-            doc_peticao = fitz.open()
-            doc_decisao = fitz.open()
+        # Criar documentos separados
+        doc_peticao = fitz.open()
+        doc_decisao = fitz.open()
 
-            for pagina in paginas_peticao:
-                doc_peticao.insert_pdf(doc, from_page=pagina, to_page=pagina)
+        for p in paginas_peticao:
+            doc_peticao.insert_pdf(doc, from_page=p, to_page=p)
+        for p in paginas_decisao:
+            doc_decisao.insert_pdf(doc, from_page=p, to_page=p)
 
-            for pagina in paginas_decisao:
-                doc_decisao.insert_pdf(doc, from_page=pagina, to_page=pagina)
-
-            # Juntar os documentos extraídos
-            doc_final = fitz.open()
+        # Combinar resultados
+        doc_final = fitz.open()
+        if len(doc_peticao) > 0:
             doc_final.insert_pdf(doc_peticao)
+        if len(doc_decisao) > 0:
             doc_final.insert_pdf(doc_decisao)
 
-            # Renomear e salvar o arquivo final
-            nome_base = Path(arquivo).stem  # Remove a extensão .pdf
+        if len(doc_final) > 0:
             caminho_saida = os.path.join(PASTA_SAIDA, f"{nome_base}.pdf")
             doc_final.save(caminho_saida)
+            print(f"Processado com PyMuPDF: {caminho_saida}")
+            return True
+        else:
+            raise Exception("Nenhuma página válida encontrada.")
 
-            print(f"Processado e salvo: {caminho_saida}")
-
-        finally:
-            # Fechar todos os documentos para liberar o arquivo original
-            doc.close()
-            doc_peticao.close()
-            doc_decisao.close()
-            doc_final.close()
-
-        # Enviar o arquivo original para a lixeira
-        #shutil.move(caminho_arquivo, Path.home() / ".Trash")
-
-# Após o processamento de todos os arquivos, move os processados para a lixeira
-#PASTA_ORIGEM = "docs PJs"
-
-# Apagar o conteúdo da pasta
-for arquivo in os.listdir(PASTA_ORIGEM):
-    caminho_arquivo = os.path.join(PASTA_ORIGEM, arquivo)
-    try:
-        if os.path.isfile(caminho_arquivo) or os.path.islink(caminho_arquivo):
-            os.unlink(caminho_arquivo)  # Remove arquivos ou links simbólicos
-        elif os.path.isdir(caminho_arquivo):
-            shutil.rmtree(caminho_arquivo)  # Remove diretórios e seu conteúdo
-        print(f"Removido: {caminho_arquivo}")
     except Exception as e:
-        print(f"Erro ao remover {caminho_arquivo}: {e}")
+        print(f"Erro no processamento principal: {e}")
+        return False
+    finally:
+        doc.close()
+        if 'doc_peticao' in locals(): doc_peticao.close()
+        if 'doc_decisao' in locals(): doc_decisao.close()
+        if 'doc_final' in locals(): doc_final.close()
+
+
+def processar_com_metodo_alternativo(caminho_arquivo, nome_base):
+    """Método alternativo usando PyPDF2 + pdfplumber quando o principal falha."""
+    print(f"⚠️ Tentando método alternativo para: {nome_base}")
+
+    try:
+        paginas_peticao = []
+        paginas_decisao = []
+
+        with pdfplumber.open(caminho_arquivo) as pdf:
+            for i, page in enumerate(pdf.pages):
+                texto = page.extract_text() or ""
+
+                if not paginas_peticao and any(t in texto for t in TERMINOS_PETICAO):
+                    paginas_peticao = list(range(0, i + 1))
+
+                if any(t in texto for t in [TERMO_DECISAO, TERMO_DESPACHO, TERMO_OFICIO]):
+                    if any(j in texto for j in TERMO_JUIZ):
+                        paginas_decisao = [i]  # Mantém apenas a última
+
+        if not paginas_peticao:
+            paginas_peticao = list(range(0, min(15, len(pdf.pages))))
+
+        reader = PyPDF2.PdfReader(caminho_arquivo)
+        writer = PyPDF2.PdfWriter()
+
+        for i in paginas_peticao:
+            writer.add_page(reader.pages[i])
+        for i in paginas_decisao:
+            writer.add_page(reader.pages[i])
+
+        if writer.pages:
+            caminho_saida = os.path.join(PASTA_SAIDA, f"{nome_base}.pdf")
+            with open(caminho_saida, "wb") as f_out:
+                writer.write(f_out)
+            print(f"✅ Processado com método alternativo: {caminho_saida}")
+            return True
+        else:
+            raise Exception("Nenhuma página válida encontrada no método alternativo.")
+
+    except Exception as e:
+        print(f"Erro no método alternativo: {e}")
+        return False
+
+
+def mover_para_lixeira(caminho_arquivo):
+    """Tenta mover para a lixeira, se falhar remove permanentemente."""
+    try:
+        # Tentativa de mover para lixeira (Windows)
+        if os.name == 'nt':
+            import send2trash
+            send2trash.send2trash(caminho_arquivo)
+            print(f"Enviado para lixeira: {caminho_arquivo}")
+        else:
+            # Em outros sistemas, remove permanentemente
+            os.remove(caminho_arquivo)
+            print(f"Removido permanentemente: {caminho_arquivo}")
+    except Exception as e:
+        print(f"Falha ao mover para lixeira, removendo permanentemente: {e}")
+        os.remove(caminho_arquivo)
+
+
+def main():
+    falhas = []
+    sucessos = 0
+
+    for arquivo in os.listdir(PASTA_ORIGEM):
+        if not arquivo.endswith(".pdf"):
+            continue
+
+        caminho_arquivo = os.path.join(PASTA_ORIGEM, arquivo)
+        nome_base = Path(arquivo).stem
+
+        try:
+            # Tentar primeiro com PyMuPDF
+            sucesso = processar_com_pymupdf(caminho_arquivo, nome_base)
+
+            if not sucesso:
+                # Se falhar, tentar método alternativo
+                sucesso = processar_com_metodo_alternativo(caminho_arquivo, nome_base)
+                if sucesso:
+                    falhas.append((arquivo, "Método alternativo"))
+                else:
+                    falhas.append((arquivo, "Falha total"))
+            else:
+                sucessos += 1
+
+            # Mover arquivo original para lixeira/apagar
+            mover_para_lixeira(caminho_arquivo)
+
+        except Exception as e:
+            print(f"Erro inesperado ao processar {arquivo}: {e}")
+            falhas.append((arquivo, "Erro inesperado"))
+
+    # Relatório final
+    print("\n=== RELATÓRIO FINAL ===")
+    print(f"✅ {sucessos} arquivos processados com sucesso pelo método principal")
+
+    if falhas:
+        print("\n⚠️ Arquivos com problemas:")
+        for arquivo, motivo in falhas:
+            print(f" - {arquivo}: {motivo}")
+    else:
+        print("\n🎉 Todos os arquivos foram processados com sucesso!")
+
+
+if __name__ == "__main__":
+    main()
 
 
 
+
+
+# ----------------------------------------------------------------
 #Código 5 - numeração das folhas dos arquivos .PDF
+# ----------------------------------------------------------------
+
 
 def carregar_dados_txt(caminho_txt):
     """Lê a sigla e a matrícula de um arquivo .txt"""
@@ -834,9 +1014,9 @@ processar_pasta_docs(
 )
 
 
-
+# ----------------------------------------------------------------
 #Código 6 autuar os processos no GIAP;
-
+# ----------------------------------------------------------------
 
 # Função para carregar credenciais de login
 def carregar_credenciais(caminho_json):
@@ -958,7 +1138,7 @@ def processar_planilha(caminho_excel, caminho_credenciais):
             campo_de_busca_nome_orgao.send_keys(significado)
             time.sleep(1)
             campo_de_busca_nome_orgao.submit()
-            time.sleep(1)
+            time.sleep(3)
 
             # Selecionar opções específicas no GIAP (exemplo)
             if significado == "TRIBUNAL DE JUSTIÇA DO ESTADO DE SÃO PAULO":
@@ -1009,22 +1189,22 @@ def processar_planilha(caminho_excel, caminho_credenciais):
             # Daqui para baixo segue o meu código para baixar a capa como PDF
 
             # Salvar a página como PDF
+            time.sleep(2)
             driver.find_element(By.XPATH, '//*[@id="B4985322504071026678"]/span').click()
 
             # Identificar as janelas/abas abertas
             janelas = driver.window_handles
             driver.switch_to.window(janelas[1])
-
+            time.sleep(2)
             print("Salvando a página como PDF...")
             driver.execute_script('window.print();')
-
-
+            time.sleep(2)
+            driver.close()
 
             # Obter todos os identificadores de janela
             print("Capa do processo salva como PDF com sucesso!")
 
             time.sleep(2)
-            # driver.close()
 
             # Voltar para a janela principal
             driver.switch_to.window(janelas[0])
@@ -1058,8 +1238,13 @@ processar_planilha(caminho_excel, caminho_credenciais)
 
 
 
+# ----------------------------------------------------------------
 #Código 6.1 inserir uma pg em branco nas capas do GIAP
 #Isso é por causa da impressora que imprime frente e verso
+# ----------------------------------------------------------------
+
+
+
 
 
 
@@ -1102,8 +1287,13 @@ adicionar_pagina_branca_em_pdfs(diretorio_pdfs)
 
 
 
-
+# ----------------------------------------------------------------
 #Código 7 - Juntar capa com os documentos em si
+# ----------------------------------------------------------------
+
+
+
+
 
 
 # Função para verificar se um número segue o padrão especificado
@@ -1197,8 +1387,13 @@ arquivo_excel = "dados_para_autuar_processos.xlsx"
 processar_documentos(diretorio_docs, arquivo_excel)
 
 
-
+# ----------------------------------------------------------------
 #Código 8 Criar o modelo de registro para os cadernos SAJ de procurador
+# ----------------------------------------------------------------
+
+
+
+
 
 
 # Caminhos para os arquivos
@@ -1271,10 +1466,21 @@ except Exception as e:
 
 
 
+# ----------------------------------------------------------------
+#Código 8.1 impressora 15/04/2025
+# ----------------------------------------------------------------
+
+#Como obter o nome da impressora? 1 - Apertar tecla windows e escrever a palavra "impressora", logo aparecerá a guia "impressoras e scanners", clique.
+# 2 - Escolha a impressora a ser usada para realizar as impressões nela, dê 1 clique com o botão esquerdo e clique na opção "Gerenciar"
+# 3 - Na tela que abriu, clique na opção "Propriedades da impressora"
+# 4 - Na tela que abrir, terá o nome da impressora selecionado, copie e cole entre as aspas duplas NOME_IMPRESSORA_DESEJADA = "Lexmark MX720 Series XL"
 
 
-#A ideia aqui é a de imprimir o modelo do que colar no caderno para que após isso a impressão fique rápida,
-# já que na primeira vez ela imprime de forma lenta.
+# Nome fixo da impressora desejada
+NOME_IMPRESSORA_DESEJADA = "Lexmark MX720 Series XL"
+
+# Diretório dos arquivos a serem impressos
+caminho = r"C:\Users\wesley\PycharmProjects\Autuar-processos\docs numerados"
 
 print("Abaixo segue a listagem das impressoras disponíveis:")
 
@@ -1285,105 +1491,113 @@ for i, impressora in enumerate(lista_impressoras):
     print(f"{i}: {impressora[2]}")  # O nome da impressora está na posição [2]
 print("---------------------")
 
-# Seleciona a impressora (verifica se há pelo menos duas impressoras disponíveis)
-try:
-    impressora = lista_impressoras[6]  # Ajuste conforme necessário
+# Seleciona a impressora pelo nome
+impressora = None
+for imp in lista_impressoras:
+    if NOME_IMPRESSORA_DESEJADA.lower() in imp[2].lower():
+        impressora = imp
+        break
+
+if impressora:
     win32print.SetDefaultPrinter(impressora[2])
-except IndexError:
-    print("Erro: Nenhuma impressora disponível ou índice inválido.")
-    exit(1)
-
-# Diretório dos arquivos a serem impressos
-caminho = r"C:\Users\wesley\PycharmProjects\Autuar-processos\docs numerados"
+    print(f"Impressora selecionada: {impressora[2]}")
 
 
-# Função para verificar se há documentos na fila de impressão
-def obter_numero_jobs():
-    try:
-        printer_info = win32print.OpenPrinter(impressora[2])
-        jobs = win32print.EnumJobs(printer_info, 0, -1, 1)  # Obtém a lista de trabalhos na fila
-        win32print.ClosePrinter(printer_info)
-        return len(jobs)  # Retorna o número de trabalhos na fila
-    except Exception as e:
-        print(f"Erro ao acessar a fila de impressão: {e}")
-        return -1
-
-
-# Função para verificar se um arquivo está desbloqueado
-def arquivo_desbloqueado(caminho_arquivo, timeout=30):
-    tempo_inicio = time.time()
-    while time.time() - tempo_inicio < timeout:
+    # Função para verificar se há documentos na fila de impressão
+    def obter_numero_jobs():
         try:
-            with open(caminho_arquivo, "r"):
-                return True
-        except PermissionError:
-            print(f"Aguardando o arquivo {os.path.basename(caminho_arquivo)} ser liberado...")
+            printer_info = win32print.OpenPrinter(impressora[2])
+            jobs = win32print.EnumJobs(printer_info, 0, -1, 1)  # Obtém a lista de trabalhos na fila
+            win32print.ClosePrinter(printer_info)
+            return len(jobs)  # Retorna o número de trabalhos na fila
+        except Exception as e:
+            print(f"Erro ao acessar a fila de impressão: {e}")
+            return -1
+
+
+    # Função para verificar se um arquivo está desbloqueado
+    def arquivo_desbloqueado(caminho_arquivo, timeout=30):
+        tempo_inicio = time.time()
+        while time.time() - tempo_inicio < timeout:
+            try:
+                with open(caminho_arquivo, "r"):
+                    return True
+            except PermissionError:
+                print(f"Aguardando o arquivo {os.path.basename(caminho_arquivo)} ser liberado...")
+                time.sleep(5)
+        print(f"Aviso: Tempo limite atingido para desbloqueio de {os.path.basename(caminho_arquivo)}.")
+        return False
+
+
+    # Lista inicial de arquivos
+    lista_arquivos = sorted(os.listdir(caminho))  # Ordena os arquivos por nome
+    arquivos_nao_impressos = []
+
+    print("Arquivos encontrados para impressão:")
+    for arquivo in lista_arquivos:
+        print(arquivo)
+
+    while lista_arquivos:
+        arquivo = lista_arquivos[0]  # Pega o primeiro arquivo da lista
+        caminho_arquivo = os.path.join(caminho, arquivo)
+
+        try:
+            print(f"Enviando para impressão: {arquivo}")
+            win32api.ShellExecute(0, "print", caminho_arquivo, None, caminho, 0)
+        except Exception as e:
+            print(f"Erro ao tentar imprimir {arquivo}: {e}")
+            arquivos_nao_impressos.append(arquivo)
+            lista_arquivos.pop(0)
+            continue  # Passa para o próximo arquivo
+
+        # Esperar até que o trabalho entre na fila de impressão (com timeout)
+        print("Aguardando o arquivo entrar na fila de impressão...")
+        tempo_inicio = time.time()
+        while obter_numero_jobs() == 0:
+            if time.time() - tempo_inicio > 30:
+                print(f"Aviso: {arquivo} não entrou na fila de impressão a tempo.")
+                arquivos_nao_impressos.append(arquivo)
+                break
+            time.sleep(1)
+
+        # Aguardando a impressão ser concluída (com timeout)
+        print("Aguardando a impressão ser concluída...")
+        tempo_inicio = time.time()
+        while obter_numero_jobs() > 0:
+            if time.time() - tempo_inicio > 120:
+                print(f"Aviso: Tempo limite atingido para impressão de {arquivo}.")
+                arquivos_nao_impressos.append(arquivo)
+                break
             time.sleep(5)
-    print(f"Aviso: Tempo limite atingido para desbloqueio de {os.path.basename(caminho_arquivo)}.")
-    return False
 
-
-# Lista inicial de arquivos
-lista_arquivos = sorted(os.listdir(caminho))  # Ordena os arquivos por nome
-arquivos_nao_impressos = []
-
-print("Arquivos encontrados para impressão:")
-for arquivo in lista_arquivos:
-    print(arquivo)
-
-while lista_arquivos:
-    arquivo = lista_arquivos[0]  # Pega o primeiro arquivo da lista
-    caminho_arquivo = os.path.join(caminho, arquivo)
-
-    try:
-        print(f"Enviando para impressão: {arquivo}")
-        win32api.ShellExecute(0, "print", caminho_arquivo, None, caminho, 0)
-    except Exception as e:
-        print(f"Erro ao tentar imprimir {arquivo}: {e}")
-        arquivos_nao_impressos.append(arquivo)
-        lista_arquivos.pop(0)
-        continue  # Passa para o próximo arquivo
-
-    # Esperar até que o trabalho entre na fila de impressão (com timeout)
-    print("Aguardando o arquivo entrar na fila de impressão...")
-    tempo_inicio = time.time()
-    while obter_numero_jobs() == 0:
-        if time.time() - tempo_inicio > 30:
-            print(f"Aviso: {arquivo} não entrou na fila de impressão a tempo.")
+        print(f"Verificando se o arquivo {arquivo} está desbloqueado...")
+        if not arquivo_desbloqueado(caminho_arquivo):
             arquivos_nao_impressos.append(arquivo)
-            break
-        time.sleep(1)
+            lista_arquivos.pop(0)
+            continue
 
-    # Aguardando a impressão ser concluída (com timeout)
-    print("Aguardando a impressão ser concluída...")
-    tempo_inicio = time.time()
-    while obter_numero_jobs() > 0:
-        if time.time() - tempo_inicio > 120:
-            print(f"Aviso: Tempo limite atingido para impressão de {arquivo}.")
-            arquivos_nao_impressos.append(arquivo)
-            break
-        time.sleep(5)
-
-    print(f"Verificando se o arquivo {arquivo} está desbloqueado...")
-    if not arquivo_desbloqueado(caminho_arquivo):
-        arquivos_nao_impressos.append(arquivo)
-        lista_arquivos.pop(0)
-        continue
-
-    print(f"Movendo {arquivo} para a lixeira...")
-    send2trash(caminho_arquivo)
-    lista_arquivos = sorted(os.listdir(caminho))  # Atualiza a lista de arquivos restantes
-
-print("Todos os arquivos processados. Atualizando planilhas do Expediente e Procuradoria...")
-
-# Exibir arquivos que não foram impressos
-if arquivos_nao_impressos:
-    print("Os seguintes arquivos não foram impressos e precisam ser verificados manualmente:")
-    for arquivo in arquivos_nao_impressos:
-        print(f"- {arquivo}")
+        print(f"Movendo {arquivo} para a lixeira...")
+        send2trash(caminho_arquivo)
+        lista_arquivos = sorted(os.listdir(caminho))  # Atualiza a lista de arquivos restantes
 
 
+    # Exibir arquivos que não foram impressos
+    if arquivos_nao_impressos:
+        print("Os seguintes arquivos não foram impressos e precisam ser verificados manualmente:")
+        for arquivo in arquivos_nao_impressos:
+            print(f"- {arquivo}")
+else:
+    print("A impressora descrita na variavel NÃO FOI localizada, você deverá imprimir manualmente DEPOIS que o código terminar de executar.")
+
+
+
+
+# ----------------------------------------------------------------
 #Código 9 atualizar as planilhas de judicial e do expediente
+# ----------------------------------------------------------------
+
+
+
 
 # Função para autenticar usando uma conta de serviço
 def autenticar_google_sheets():
@@ -1515,8 +1729,14 @@ processar_caso_2()
 
 
 
-
+# ----------------------------------------------------------------
 #Código 10 - Limpar os itens da planilha excel e diretórios para a próxima execução
+# ----------------------------------------------------------------
+
+
+
+
+
 def limpar_planilha_captacoes():
     def contagem_regressiva():
         for t in range(30, 0, -1):
@@ -1553,8 +1773,11 @@ limpar_planilha_captacoes()
 
 
 
-
+# ----------------------------------------------------------------
 #Código 10.1 - mover  o conteudo dos diretórios para a lixeira
+# ----------------------------------------------------------------
+
+
 
 def mover_para_lixeira():
     # Lista das pastas que terão seus conteúdos movidos para a lixeira
